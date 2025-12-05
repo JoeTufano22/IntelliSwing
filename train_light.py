@@ -9,27 +9,20 @@ import os
 
 if __name__ == '__main__':
 
-    # training configuration
+    # VERY LIGHT training configuration for testing
     split = 1
-    iterations = 2000
-    it_save = 100  # save model every 100 iterations
-    n_cpu = 2  # Reduced from 6 to avoid overwhelming CPU
-    seq_length = 64
-    bs = 4  # Reduced from 22 to use less memory
+    iterations = 50  # Just 50 iterations for testing
+    it_save = 25  # save model every 25 iterations
+    n_cpu = 1  # Minimal CPU usage
+    seq_length = 32  # Reduced from 64
+    bs = 1  # Minimal batch size
     k = 10  # frozen layers
     
-    # Set device (CUDA, MPS for Apple Silicon, or CPU)
-    if torch.cuda.is_available():
-        device = torch.device('cuda')
-        print('Using CUDA')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
-        print('Using Apple Silicon (MPS)')
-    else:
-        device = torch.device('cpu')
-        print('Using CPU')
+    # Force CPU to avoid overloading the system
+    device = torch.device('cpu')
+    print('Using CPU (safe mode for testing)')
 
-    model = EventDetector(pretrain=True,
+    model = EventDetector(pretrain=False,  # Skip pretrained weights
                           width_mult=1.,
                           lstm_layers=1,
                           lstm_hidden=256,
@@ -63,6 +56,7 @@ if __name__ == '__main__':
     if not os.path.exists('models'):
         os.mkdir('models')
 
+    print(f"Starting light training: {iterations} iterations with batch size {bs}")
     i = 0
     while i < iterations:
         for sample in data_loader:
@@ -78,9 +72,13 @@ if __name__ == '__main__':
             i += 1
             if i % it_save == 0:
                 torch.save({'optimizer_state_dict': optimizer.state_dict(),
-                            'model_state_dict': model.state_dict()}, 'models/swingnet_{}.pth.tar'.format(i))
+                            'model_state_dict': model.state_dict()}, 'models/swingnet_light_{}.pth.tar'.format(i))
             if i == iterations:
                 break
+
+    print("\nLight training completed successfully!")
+
+
 
 
 

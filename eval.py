@@ -33,7 +33,7 @@ def eval(model, split, seq_length, n_cpu, disp):
                 image_batch = images[:, batch * seq_length:, :, :, :]
             else:
                 image_batch = images[:, batch * seq_length:(batch + 1) * seq_length, :, :, :]
-            logits = model(image_batch.cuda())
+            logits = model(image_batch.to(device))
             if batch == 0:
                 probs = F.softmax(logits.data, dim=1).cpu().numpy()
             else:
@@ -53,6 +53,10 @@ if __name__ == '__main__':
     seq_length = 64
     n_cpu = 6
 
+    # Set device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Using device: {device}')
+    
     model = EventDetector(pretrain=True,
                           width_mult=1.,
                           lstm_layers=1,
@@ -60,9 +64,9 @@ if __name__ == '__main__':
                           bidirectional=True,
                           dropout=False)
 
-    save_dict = torch.load('models/swingnet_1800.pth.tar')
+    save_dict = torch.load('models/swingnet_1800.pth.tar', weights_only=False, map_location=device)
     model.load_state_dict(save_dict['model_state_dict'])
-    model.cuda()
+    model.to(device)
     model.eval()
     PCE = eval(model, split, seq_length, n_cpu, True)
     print('Average PCE: {}'.format(PCE))
