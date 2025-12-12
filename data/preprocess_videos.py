@@ -58,5 +58,3 @@ if __name__ == '__main__':
     if not os.path.exists(path):
         os.mkdir(path)
     preprocess_videos(df.id[1])
-    # p = Pool(6)
-    # p.map(preprocess_videos, df.id)

@@ -8,21 +8,18 @@ import os
 
 
 if __name__ == '__main__':
-
-    # VERY LIGHT training configuration for testing
     split = 1
-    iterations = 50  # Just 50 iterations for testing
-    it_save = 25  # save model every 25 iterations
-    n_cpu = 1  # Minimal CPU usage
-    seq_length = 32  # Reduced from 64
-    bs = 1  # Minimal batch size
-    k = 10  # frozen layers
-    
-    # Force CPU to avoid overloading the system
+    iterations = 50
+    it_save = 25
+    n_cpu = 1
+    seq_length = 32
+    bs = 1
+    k = 10
+
     device = torch.device('cpu')
     print('Using CPU (safe mode for testing)')
 
-    model = EventDetector(pretrain=False,  # Skip pretrained weights
+    model = EventDetector(pretrain=False,
                           width_mult=1.,
                           lstm_layers=1,
                           lstm_hidden=256,
@@ -45,8 +42,6 @@ if __name__ == '__main__':
                              num_workers=n_cpu,
                              drop_last=True)
 
-    # the 8 golf swing events are classes 0 through 7, no-event is class 8
-    # the ratio of events to no-events is approximately 1:35 so weight classes accordingly:
     weights = torch.FloatTensor([1/8, 1/8, 1/8, 1/8, 1/8, 1/8, 1/8, 1/8, 1/35]).to(device)
     criterion = torch.nn.CrossEntropyLoss(weight=weights)
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001)

@@ -26,7 +26,6 @@ def eval(model, split, seq_length, n_cpu, disp):
 
     for i, sample in enumerate(data_loader):
         images, labels = sample['images'], sample['labels']
-        # full samples do not fit into GPU memory so evaluate sample in 'seq_length' batches
         batch = 0
         while batch * seq_length < images.shape[1]:
             if (batch + 1) * seq_length > images.shape[1]:
@@ -53,7 +52,6 @@ if __name__ == '__main__':
     seq_length = 64
     n_cpu = 6
 
-    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
     

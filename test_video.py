@@ -39,18 +39,17 @@ class SampleVideo(Dataset):
         top, bottom = delta_h // 2, delta_h - (delta_h // 2)
         left, right = delta_w // 2, delta_w - (delta_w // 2)
 
-        # preprocess and return frames
         images = []
         for pos in range(int(cap.get(cv2.CAP_PROP_FRAME_COUNT))):
             _, img = cap.read()
             resized = cv2.resize(img, (new_size[1], new_size[0]))
             b_img = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT,
-                                       value=[0.406 * 255, 0.456 * 255, 0.485 * 255])  # ImageNet means (BGR)
+                                       value=[0.406 * 255, 0.456 * 255, 0.485 * 255])
 
             b_img_rgb = cv2.cvtColor(b_img, cv2.COLOR_BGR2RGB)
             images.append(b_img_rgb)
         cap.release()
-        labels = np.zeros(len(images)) # only for compatibility with transforms
+        labels = np.zeros(len(images))
         sample = {'images': np.asarray(images), 'labels': np.asarray(labels)}
         if self.transform:
             sample = self.transform(sample)
@@ -96,7 +95,6 @@ if __name__ == '__main__':
     print('Testing...')
     for sample in dl:
         images = sample['images']
-        # full samples do not fit into GPU memory so evaluate sample in 'seq_length' batches
         batch = 0
         while batch * seq_length < images.shape[1]:
             if (batch + 1) * seq_length > images.shape[1]:

@@ -1,10 +1,3 @@
-"""
-Simple script to rate golf swing videos for your school project
-Usage: python rate_swing.py -p path/to/video.mp4
-
-This script rates swings based on temporal alignment with professional swing patterns from GolfDB.
-"""
-
 import argparse
 import cv2
 import torch
@@ -42,14 +35,25 @@ event_names = {
 }
 
 
+def generalize_landmark_name(name):
+    lower = name.lower()
+    side = "Left" if "left" in lower else "Right" if "right" in lower else ""
+
+    if any(k in lower for k in ["pinky", "index", "thumb", "wrist", "hand"]):
+        core = "Hand/Arm"
+    elif "elbow" in lower or "shoulder" in lower:
+        core = "Arm/Shoulder"
+    elif "hip" in lower:
+        core = "Hips/Pelvis"
+    elif any(k in lower for k in ["knee", "ankle", "heel", "foot"]):
+        core = "Lower Body/Leg"
+    else:
+        return name
+
+    return f"{side} {core}".strip()
+
+
 def load_professional_tempo_stats():
-    """
-    Load GolfDB and calculate professional swing tempo statistics.
-    Returns mean and std of frame intervals between consecutive events.
-    
-    Note: GolfDB has 10 events total, but only events[1:9] are the 8 swing events.
-    Event 0 and event 9 are video start/end markers.
-    """
     golfdb_path = 'data/golfDB.pkl'
     
     if not os.path.exists(golfdb_path):
@@ -58,28 +62,24 @@ def load_professional_tempo_stats():
     
     df = pd.read_pickle(golfdb_path)
     
-    # Calculate intervals between consecutive events for all swings
-    all_intervals = [[] for _ in range(7)]  # 7 intervals between 8 events
+    all_intervals = [[] for _ in range(7)]
     
     for idx in range(len(df)):
         full_events = df.loc[idx, 'events']
-        # Use only the 8 swing events (exclude first and last markers)
         events = full_events[1:9]
         
-        if len(events) == 8:  # Ensure all 8 events are present
+        if len(events) == 8:
             for i in range(7):
                 interval = events[i+1] - events[i]
                 all_intervals[i].append(interval)
     
-    # Calculate mean and std for each interval
     interval_means = np.array([np.mean(intervals) for intervals in all_intervals])
     interval_stds = np.array([np.std(intervals) for intervals in all_intervals])
     
     return interval_means, interval_stds
 
 
-def get_improvement_tips(tempo_score, spatial_score, top_problems):
-    """Generate improvement tips based on analysis results."""
+def get_improvement_tips(tempo_score, spatial_score, top_problems, interval_scores=None, interval_means=None, detected_intervals=None):
     tips = []
     avg_score = (tempo_score + spatial_score) / 2 if tempo_score is not None else spatial_score
 
@@ -92,106 +92,78 @@ def get_improvement_tips(tempo_score, spatial_score, top_problems):
     else:
         tips.append("Excellent technique: maintain your current form.")
 
-    if tempo_score is not None and tempo_score < 70:
+    if interval_scores is not None and len(interval_scores) == 7:
+        worst_idx = int(np.argmin(interval_scores))
+        stage_name = f"{event_names[worst_idx]} → {event_names[worst_idx + 1]}"
+        stage_score = interval_scores[worst_idx]
+        if detected_intervals is not None and len(detected_intervals) == 7 and interval_means is not None:
+            actual = detected_intervals[worst_idx]
+            pro_avg = interval_means[worst_idx]
+            delta = actual - pro_avg
+            direction = "longer" if delta > 0 else "shorter"
+            tips.append(f"Tempo: biggest gap is {stage_name} ({actual:.0f} frames vs {pro_avg:.1f} pro avg, {abs(delta):.0f} frames {direction}). Smooth that transition.")
+        else:
+            tips.append(f"Tempo: {stage_name} is the least aligned (score {stage_score:.1f}). Focus on that transition.")
+    elif tempo_score is not None and tempo_score < 70:
         tips.append("Tempo: keep rhythm consistent; practice with a metronome or counting cadence.")
 
     if top_problems:
-        main_problem = top_problems[0][2]
-        if any(k in main_problem for k in ["Wrist", "Pinky", "Index", "Thumb"]):
-            tips.append(f"Hand position: your {main_problem} positioning needs attention.")
-            tips.append("Maintain proper grip and neutral wrist angle through the swing.")
-        elif "Shoulder" in main_problem:
-            tips.append(f"Shoulder: your {main_problem} rotation may be off.")
-            tips.append("Work on shoulder turn while keeping posture stable.")
-        elif "Hip" in main_problem:
-            tips.append(f"Hip movement: your {main_problem} positioning affects power transfer.")
-            tips.append("Focus on hip rotation and weight transfer.")
-        elif any(k in main_problem for k in ["Knee", "Ankle", "Foot"]):
-            tips.append(f"Lower body: your {main_problem} positioning affects balance.")
-            tips.append("Maintain balance and proper weight distribution.")
-        elif "Elbow" in main_problem:
-            tips.append(f"Arm position: your {main_problem} angle needs adjustment.")
-            tips.append("Keep arm structure consistent through the swing.")
+        raw_problem = top_problems[0][2]
+        main_problem = generalize_landmark_name(raw_problem)
+        tips.append(f"Spatial: main issue appears around the {main_problem.lower()} ({raw_problem}).")
+
+        lower_problem = main_problem.lower()
+        if "hand/arm" in lower_problem:
+            tips.append("Keep grip pressure neutral and maintain a stable wrist/forearm line through takeaway and impact.")
+        elif "shoulder" in lower_problem:
+            tips.append("Work on shoulder turn while keeping posture stable; avoid early opening or collapsing lead shoulder.")
+        elif "hip" in lower_problem or "pelvis" in lower_problem:
+            tips.append("Focus on hip rotation and weight shift; avoid sliding and keep a centered pivot.")
+        elif any(k in lower_problem for k in ["knee", "ankle", "foot", "leg"]):
+            tips.append("Stabilize lower body: maintain flex, ground contact, and balanced weight transfer.")
+        elif "elbow" in lower_problem:
+            tips.append("Maintain arm structure; avoid excessive lead elbow bend or trail elbow flying out.")
 
     return tips
 
 
 def calculate_tempo_score(events, interval_means, interval_stds):
-    """
-    Calculate how well the swing tempo matches professional patterns.
-    
-    Args:
-        events: Detected event frame numbers (8 events)
-        interval_means: Mean intervals from professional swings
-        interval_stds: Standard deviations of intervals
-    
-    Returns:
-        tempo_score: Overall tempo alignment score (0-100)
-        interval_scores: Individual scores for each interval
-        detected_intervals: The actual intervals in the swing
-    """
     if interval_means is None or interval_stds is None:
         return None, None, None
     
-    # Check for chronological order
     if not all(events[i] < events[i+1] for i in range(7)):
         print("Warning: Events are not in chronological order.")
         return 0.0, [0.0]*7, None
     
-    # Calculate actual intervals
     detected_intervals = np.array([events[i+1] - events[i] for i in range(7)])
     
-    # Calculate z-scores (how many standard deviations away from mean)
     z_scores = np.abs((detected_intervals - interval_means) / interval_stds)
     
-    # Convert z-scores to scores (0-100 scale) - More lenient scoring
-    # z=0 (exactly average) -> 100, z=1 -> ~75, z=2 -> ~50, z=3 -> ~30, z>=4 -> 0
-    # Using gentler decay (-0.3 instead of -0.5) and adding base score for leniency
     interval_scores = np.maximum(0, 100 * np.exp(-0.3 * z_scores))
-    # Add leniency: minimum score of 30 for reasonable swings (unless way off)
     interval_scores = np.maximum(interval_scores, 30 * np.exp(-0.5 * np.maximum(0, z_scores - 2)))
     
-    # Overall tempo score is weighted average
-    # Give more weight to critical intervals (backswing, downswing, impact)
-    weights = np.array([1.0, 1.5, 1.5, 2.0, 2.0, 1.5, 1.0])  # Emphasize downswing and impact
+    weights = np.array([1.0, 1.5, 1.5, 2.0, 2.0, 1.5, 1.0])
     tempo_score = np.average(interval_scores, weights=weights)
     
     return tempo_score, interval_scores, detected_intervals
 
 
 def get_current_stage(frame_num, events):
-    """
-    Determine which swing stage the current frame is in based on detected events.
-    
-    Args:
-        frame_num: Current frame number (0-indexed)
-        events: Array of detected event frame numbers [8 events]
-    
-    Returns:
-        stage_name: Name of current stage
-        stage_idx: Index of current stage (-1 if before Address, 8 if after Finish)
-    """
     if len(events) != 8:
         return "Unknown", -1
     
-    # Ensure events are in ascending order
     if not all(events[i] <= events[i+1] for i in range(7)):
         return "Unknown", -1
     
-    # Check if before Address
     if frame_num < events[0]:
         return "Before Address", -1
     
-    # Check each stage transition
-    # At the exact event frame, show that stage
-    # Between events, show the stage we're transitioning from
     for i in range(7):
         if frame_num == events[i]:
             return event_names[i], i
         if events[i] < frame_num < events[i + 1]:
             return event_names[i], i
     
-    # At or after Finish
     if frame_num >= events[7]:
         return event_names[7], 7
     
@@ -199,18 +171,9 @@ def get_current_stage(frame_num, events):
 
 
 def visualize_pose(video_path, scale_factor=3.0):
-    """
-    Visualize golf swing video with MediaPipe pose detection overlay and live stage detection.
-    Displays skeleton connections in real-time with current swing stage.
-    
-    Args:
-        video_path: Path to video file
-        scale_factor: Factor to scale up the video display (default: 3.0 for 3x larger)
-    """
     print()
     print(f'Starting pose visualization for: {video_path}')
     
-    # First, detect swing events using the model
     print('Detecting swing stages...')
     device = torch.device('cpu')
     
@@ -232,7 +195,6 @@ def visualize_pose(video_path, scale_factor=3.0):
         model = None
         events = None
     else:
-        # Detect events
         ds = SampleVideo(video_path, transform=transforms.Compose([ToTensor(),
                                     Normalize([0.485, 0.456, 0.406],
                                               [0.229, 0.224, 0.225])]))
@@ -260,7 +222,6 @@ def visualize_pose(video_path, scale_factor=3.0):
         for i, (frame, name) in enumerate(zip(events, [event_names[i] for i in range(8)])):
             print(f'   {name}: frame {frame}')
     
-    # Initialize MediaPipe Pose
     mp_pose = mp.solutions.pose
     mp_drawing = mp.solutions.drawing_utils
     pose = mp_pose.Pose(
@@ -271,7 +232,6 @@ def visualize_pose(video_path, scale_factor=3.0):
         min_tracking_confidence=0.5
     )
     
-    # Open video file
     cap = cv2.VideoCapture(video_path)
     
     if not cap.isOpened():
@@ -283,7 +243,6 @@ def visualize_pose(video_path, scale_factor=3.0):
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    # Calculate display dimensions (scaled up)
     display_width = int(frame_width * scale_factor)
     display_height = int(frame_height * scale_factor)
     
@@ -293,7 +252,6 @@ def visualize_pose(video_path, scale_factor=3.0):
     
     frame_count = 0
     
-    # Create window with a specific name
     window_name = 'Golf Swing - Pose Detection'
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, display_width, display_height)
@@ -306,51 +264,37 @@ def visualize_pose(video_path, scale_factor=3.0):
             print(f'Reached end of video ({frame_count} frames processed)')
             break
         
-        # Convert BGR to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Process frame with MediaPipe
         results = pose.process(rgb_frame)
         
-        # Draw pose landmarks and connections on the frame
         annotated_frame = frame.copy()
         if results.pose_landmarks:
-            # Use smaller, less cluttered landmarks
-            # Landmarks: smaller radius (1px), thinner lines, more subtle color
-            # Connections: slightly thicker for visibility when scaled up
             mp_drawing.draw_landmarks(
                 annotated_frame,
                 results.pose_landmarks,
                 mp_pose.POSE_CONNECTIONS,
-                # Landmark drawing spec: smaller radius, thinner, more subtle green
                 mp_drawing.DrawingSpec(color=(0, 200, 0), thickness=1, circle_radius=1),
-                # Connection drawing spec: thicker red lines for visibility
                 mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2)
             )
         
-        # Resize frame for larger display
         display_frame = cv2.resize(annotated_frame, (display_width, display_height), 
                                    interpolation=cv2.INTER_LINEAR)
         
-        # Scale text size for larger display
         text_scale = scale_factor * 0.4
         text_thickness = int(max(2, scale_factor * 0.8))
         outline_thickness = int(max(3, scale_factor * 1.2))
         
-        # Determine current stage
         current_stage = "Unknown"
         if events is not None:
             current_stage, _ = get_current_stage(frame_count, events)
         
-        # High contrast colors: Bright yellow text with black outline
-        text_color = (0, 255, 255)  # Bright yellow (BGR)
-        outline_color = (0, 0, 0)   # Black outline
+        text_color = (0, 255, 255)
+        outline_color = (0, 0, 0) 
         
-        # Draw frame counter with outline for high contrast
         frame_text = f'Frame: {frame_count}/{total_frames}'
         frame_pos = (int(10 * scale_factor), int(35 * scale_factor))
         
-        # Draw outline (black)
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
                 if dx != 0 or dy != 0:
@@ -359,16 +303,13 @@ def visualize_pose(video_path, scale_factor=3.0):
                                cv2.FONT_HERSHEY_SIMPLEX, text_scale,
                                outline_color, outline_thickness)
         
-        # Draw main text (yellow)
         cv2.putText(display_frame, frame_text, frame_pos,
                    cv2.FONT_HERSHEY_SIMPLEX, text_scale,
                    text_color, text_thickness)
         
-        # Draw stage name with outline for high contrast
         stage_text = f'Stage: {current_stage}'
         stage_pos = (int(10 * scale_factor), int(70 * scale_factor))
         
-        # Draw outline (black)
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
                 if dx != 0 or dy != 0:
@@ -377,7 +318,6 @@ def visualize_pose(video_path, scale_factor=3.0):
                                cv2.FONT_HERSHEY_SIMPLEX, text_scale,
                                outline_color, outline_thickness)
         
-        # Draw main text (yellow)
         cv2.putText(display_frame, stage_text, stage_pos,
                    cv2.FONT_HERSHEY_SIMPLEX, text_scale,
                    text_color, text_thickness)
@@ -386,13 +326,11 @@ def visualize_pose(video_path, scale_factor=3.0):
         
         frame_count += 1
         
-        # Check for 'q' key press
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print()
             print(f'Visualization stopped by user at frame {frame_count}')
             break
-    
-    # Cleanup
+
     cap.release()
     cv2.destroyAllWindows()
     pose.close()
@@ -420,7 +358,6 @@ class SampleVideo(Dataset):
         top, bottom = delta_h // 2, delta_h - (delta_h // 2)
         left, right = delta_w // 2, delta_w - (delta_w // 2)
 
-        # preprocess and return frames
         images = []
         for pos in range(int(cap.get(cv2.CAP_PROP_FRAME_COUNT))):
             _, img = cap.read()
@@ -428,12 +365,12 @@ class SampleVideo(Dataset):
                 break
             resized = cv2.resize(img, (new_size[1], new_size[0]))
             b_img = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT,
-                                       value=[0.406 * 255, 0.456 * 255, 0.485 * 255])  # ImageNet means (BGR)
+                                       value=[0.406 * 255, 0.456 * 255, 0.485 * 255])
 
             b_img_rgb = cv2.cvtColor(b_img, cv2.COLOR_BGR2RGB)
             images.append(b_img_rgb)
         cap.release()
-        labels = np.zeros(len(images))  # only for compatibility with transforms
+        labels = np.zeros(len(images))
         sample = {'images': np.asarray(images), 'labels': np.asarray(labels)}
         if self.transform:
             sample = self.transform(sample)
@@ -441,22 +378,16 @@ class SampleVideo(Dataset):
 
 
 def rate_swing(video_path, seq_length=64):
-    """
-    Rate a golf swing video based on temporal alignment with professional swings.
-    Returns: events (frame numbers), tempo score, individual interval scores
-    """
     print()
     print(f'Analyzing video: {video_path}')
     
-    # Load professional tempo statistics
     print('Loading professional swing tempo data from GolfDB...')
     interval_means, interval_stds = load_professional_tempo_stats()
     
     if interval_means is not None:
         print(f'Loaded tempo data from {len(interval_means)+1} swing phases')
     
-    # Load pre-trained model
-    device = torch.device('cpu')  # Use CPU to avoid overwhelming system
+    device = torch.device('cpu') 
     print(f'Using device: {device}')
     
     model = EventDetector(pretrain=False,
@@ -471,14 +402,13 @@ def rate_swing(video_path, seq_length=64):
         model.load_state_dict(save_dict['model_state_dict'])
         print('Loaded pre-trained model weights')
     except Exception as e:
-        print(f"❌ Error loading model: {e}")
+        print(f"Error loading model: {e}")
         print("Make sure 'models/swingnet_1800.pth.tar' exists")
         return None, None, None
 
     model.to(device)
     model.eval()
 
-    # Prepare video
     ds = SampleVideo(video_path, transform=transforms.Compose([ToTensor(),
                                 Normalize([0.485, 0.456, 0.406],
                                           [0.229, 0.224, 0.225])]))
@@ -490,7 +420,6 @@ def rate_swing(video_path, seq_length=64):
     with torch.no_grad():
         for sample in dl:
             images = sample['images']
-            # Process in batches to avoid memory issues
             batch = 0
             while batch * seq_length < images.shape[1]:
                 if (batch + 1) * seq_length > images.shape[1]:
@@ -506,13 +435,11 @@ def rate_swing(video_path, seq_length=64):
 
     events = np.argmax(probs, axis=0)[:-1]
     
-    # Calculate model confidence scores (for reference)
     confidence = []
     for i, e in enumerate(events):
         confidence.append(probs[e, i])
     avg_confidence = np.mean(confidence)
     
-    # Calculate tempo-based rating
     tempo_score, interval_scores, detected_intervals = calculate_tempo_score(
         events, interval_means, interval_stds
     )
@@ -547,7 +474,6 @@ def rate_swing(video_path, seq_length=64):
         print('   Based on alignment with professional swing patterns')
         print(f'   Model detection confidence: {avg_confidence:.3f}')
         
-        # Qualitative rating based on tempo score
         if tempo_score >= 80:
             quality = "Excellent - Professional Tempo"
         elif tempo_score >= 70:
@@ -563,7 +489,6 @@ def rate_swing(video_path, seq_length=64):
         
         return events, tempo_score, interval_scores
     else:
-        # Fallback to confidence-based rating if tempo data unavailable
         print()
         print('Tempo comparison unavailable - using detection confidence')
         rating = avg_confidence * 100
@@ -585,16 +510,11 @@ def rate_swing(video_path, seq_length=64):
 
 
 def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
-    """
-    Unified analysis: video display with overlay + live stage, then combined tempo + spatial results.
-    """
     print()
     print(f'Starting swing analysis for: {video_path}')
 
-    # ---------------- Tempo (event) detection ----------------
     interval_means, interval_stds = load_professional_tempo_stats()
 
-    # Device selection
     if torch.cuda.is_available():
         device = torch.device('cuda')
     elif torch.backends.mps.is_available():
@@ -618,7 +538,6 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
         print(f"❌ Error loading tempo model: {e}")
         return
 
-    # Detect events
     ds = SampleVideo(video_path, transform=transforms.Compose([ToTensor(),
                                 Normalize([0.485, 0.456, 0.406],
                                           [0.229, 0.224, 0.225])]))
@@ -641,7 +560,7 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
                 batch += 1
 
     if probs is None:
-        print("❌ Could not detect swing events.")
+        print("Could not detect swing events.")
         return
 
     events = np.argmax(probs, axis=0)[:-1]
@@ -650,10 +569,9 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
         events, interval_means, interval_stds
     )
 
-    # ---------------- Spatial analysis ----------------
     spatial_model_path = 'models/skeleton_autoencoder_best.pth.tar'
     if not os.path.exists(spatial_model_path):
-        print(f"❌ Error: Spatial model not found: {spatial_model_path}")
+        print(f"Error: Spatial model not found: {spatial_model_path}")
         return
 
     checkpoint = torch.load(spatial_model_path, map_location=device, weights_only=False)
@@ -672,7 +590,6 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
     spatial_model.eval()
     print('Loaded spatial analysis model')
 
-    # Extract skeletons
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(
         static_image_mode=False,
@@ -685,7 +602,7 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
     pose.close()
 
     if skeletons is None or len(skeletons) == 0:
-        print("❌ Error: Could not extract skeletons from video")
+        print("Error: Could not extract skeletons from video")
         return
 
     skeletons = interpolate_missing_detections(skeletons)
@@ -733,10 +650,9 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
 
     top_problems = identify_top_problem_areas(all_landmark_errors, top_n=5)
 
-    # ---------------- Video display with live stage ----------------
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print(f"❌ Error: Could not open video file {video_path}")
+        print(f"Error: Could not open video file {video_path}")
         return
 
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -747,11 +663,8 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
     display_width = int(frame_width * scale_factor)
     display_height = int(frame_height * scale_factor)
 
-    # Playback timing derived from source FPS
     delay_play_ms = max(1, int(round(1000.0 / fps))) if fps and fps > 0 else 33
     delay_pause_ms = 30
-
-    # Suppress pre-video details; results will print after window closes
 
     mp_drawing = mp.solutions.drawing_utils
     mp_pose = mp.solutions.pose
@@ -767,9 +680,8 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, display_width, display_height)
 
-    # Simple play/pause state and scrubbing state
     playing = True
-    button_rect = (10, 10, 110, 40)  # x, y, w, h
+    button_rect = (10, 10, 110, 40)
     scrub_state = {'seeking': False, 'updating': False, 'target': 0}
 
     def on_mouse(event, x, y, flags, param):
@@ -781,11 +693,10 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
 
     cv2.setMouseCallback(window_name, on_mouse)
 
-    # Trackbar setup
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     def on_trackbar(val):
         if scrub_state['updating']:
-            return  # ignore updates triggered by code
+            return 
         scrub_state['seeking'] = True
         scrub_state['target'] = val
 
@@ -794,25 +705,22 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
     frame_count = 0
     last_frame = None
     while True:
-        # Handle user scrubbing with immediate display
         if scrub_state['seeking']:
             cap.set(cv2.CAP_PROP_POS_FRAMES, scrub_state['target'])
             ret, frame = cap.read()
             scrub_state['seeking'] = False
-            playing = False  # pause when user scrubs
+            playing = False 
         elif playing:
             ret, frame = cap.read()
         else:
             ret, frame = True, last_frame
 
-        # If no frame (start or past end)
         if not ret or frame is None:
             if last_frame is None:
-                break  # nothing to show
+                break 
             frame = last_frame
             playing = False
 
-        # Sync frame counter with actual cap position (after read, position points to next)
         frame_count = max(int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1, 0)
 
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -834,8 +742,8 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
         text_scale = scale_factor * 0.4
         text_thickness = int(max(2, scale_factor * 0.8))
         outline_thickness = int(max(3, scale_factor * 1.2))
-        text_color = (0, 255, 255)  # yellow
-        outline_color = (0, 0, 0)   # black
+        text_color = (0, 255, 255)  
+        outline_color = (0, 0, 0)   
 
         current_stage, _ = get_current_stage(frame_count, events) if events is not None else ("Unknown", -1)
 
@@ -865,7 +773,6 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
                    cv2.FONT_HERSHEY_SIMPLEX, text_scale,
                    text_color, text_thickness)
 
-        # Draw play/pause button (top-left)
         bx, by, bw, bh = button_rect
         cv2.rectangle(display_frame, (bx, by), (bx + bw, by + bh), (30, 30, 30), -1)
         cv2.rectangle(display_frame, (bx, by), (bx + bw, by + bh), (200, 200, 200), 1)
@@ -873,7 +780,6 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
         cv2.putText(display_frame, btn_text, (bx + 10, by + 28),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # Sync trackbar position without triggering callback
         scrub_state['updating'] = True
         cv2.setTrackbarPos('Frame', window_name, min(frame_count, total_frames - 1))
         scrub_state['updating'] = False
@@ -885,29 +791,25 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
             print()
             print('Skipped to results')
             break
-        if key == ord(' '):  # toggle play/pause
+        if key == ord(' '): 
             playing = not playing
 
-        # If window was closed by the user
         if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
             print()
             print('Window closed by user')
             break
 
-        # Cache last frame
         last_frame = frame.copy()
 
     cap.release()
     cv2.destroyAllWindows()
     pose_viz.close()
 
-    # ---------------- Results ----------------
     print()
     print('=' * 80)
     print('COMPREHENSIVE SWING ANALYSIS RESULTS')
     print('=' * 80)
 
-    # Tempo analysis
     print()
     print('TEMPORAL (TEMPO) ANALYSIS:')
     print('-' * 80)
@@ -916,12 +818,11 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
         print()
         print('Detected Swing Stages:')
         for name, frame in zip(event_names.values(), events):
-            print(f'  {name:25s} | Frame {frame:4d}')
+            print(f'  {name:35s} | Frame {frame:4d}')
     else:
         print('Tempo analysis unavailable')
         tempo_score = 0
 
-    # Spatial analysis
     print()
     print('SPATIAL (BODY POSITION) ANALYSIS:')
     print('-' * 80)
@@ -930,10 +831,10 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
     print('Top Problem Areas:')
     avg_landmark_error = np.mean(all_landmark_errors) if len(all_landmark_errors) else 0
     for rank, (idx, error, name) in enumerate(top_problems, 1):
+        display_name = generalize_landmark_name(name)
         deviation = error / avg_landmark_error if avg_landmark_error > 0 else 0
-        print(f'  {rank}. {name:25s} | Error: {error:.6f} | {deviation:.1f}x average')
+        print(f'  {rank}. {display_name:25s} ({name}) | Error: {error:.6f} | {deviation:.1f}x average')
 
-    # Combined
     print()
     print('COMBINED ANALYSIS:')
     print('-' * 80)
@@ -951,11 +852,17 @@ def analyze_swing(video_path, scale_factor=3.0, seq_length=64):
         overall_quality = "Poor - Significant Issues"
     print(f'Overall Quality: {overall_quality}')
 
-    # Tips
     print()
     print('IMPROVEMENT TIPS:')
     print('-' * 80)
-    tips = get_improvement_tips(tempo_score, spatial_score, top_problems)
+    tips = get_improvement_tips(
+        tempo_score,
+        spatial_score,
+        top_problems,
+        interval_scores=interval_scores,
+        interval_means=interval_means,
+        detected_intervals=detected_intervals
+    )
     for tip in tips:
         print(f'  {tip}')
     print()

@@ -40,7 +40,6 @@ def correct_preds(probs, labels, tol=-1):
 
 
 def freeze_layers(num_freeze, net):
-    # print("Freezing {:2d} layers".format(num_freeze))
     i = 1
     for child in net.children():
         if i ==1:

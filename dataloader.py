@@ -19,15 +19,14 @@ class GolfDB(Dataset):
         return len(self.df)
 
     def __getitem__(self, idx):
-        a = self.df.loc[idx, :]  # annotation info
+        a = self.df.loc[idx, :]
         events = a['events']
-        events -= events[0]  # now frame #s correspond to frames in preprocessed video clips
+        events -= events[0]
 
         images, labels = [], []
         cap = cv2.VideoCapture(osp.join(self.vid_dir, '{}.mp4'.format(a['id'])))
 
         if self.train:
-            # random starting position, sample 'seq_length' frames
             start_frame = np.random.randint(events[-1] + 1)
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             pos = start_frame
@@ -46,7 +45,6 @@ class GolfDB(Dataset):
                     pos = 0
             cap.release()
         else:
-            # full clip
             for pos in range(int(cap.get(cv2.CAP_PROP_FRAME_COUNT))):
                 _, img = cap.read()
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -84,30 +82,19 @@ class Normalize(object):
 
 
 if __name__ == '__main__':
+    norm = Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
-    norm = Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])  # ImageNet mean and std (RGB)
-
-    dataset = GolfDB(data_file='data/train_split_1.pkl',
-                     vid_dir='data/videos_160/',
-                     seq_length=64,
-                     transform=transforms.Compose([ToTensor(), norm]),
-                     train=False)
+    dataset = GolfDB(
+        data_file='data/train_split_1.pkl',
+        vid_dir='data/videos_160/',
+        seq_length=64,
+        transform=transforms.Compose([ToTensor(), norm]),
+        train=False
+    )
 
     data_loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=6, drop_last=False)
 
-    for i, sample in enumerate(data_loader):
+    for _, sample in enumerate(data_loader):
         images, labels = sample['images'], sample['labels']
         events = np.where(labels.squeeze() < 8)[0]
         print('{} events: {}'.format(len(events), events))
-
-
-
-
-    
-
-
-
-
-
-       
-

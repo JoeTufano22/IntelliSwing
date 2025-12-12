@@ -12,7 +12,7 @@ class EventDetector(nn.Module):
         self.lstm_hidden = lstm_hidden
         self.bidirectional = bidirectional
         self.dropout = dropout
-        self.device = None  # Will be set when model is moved to device
+        self.device = None
 
         net = MobileNetV2(width_mult=width_mult)
         if pretrain:
@@ -36,7 +36,6 @@ class EventDetector(nn.Module):
             self.drop = nn.Dropout(0.5)
 
     def init_hidden(self, batch_size):
-        # Get device from model parameters
         device = next(self.parameters()).device
         if self.bidirectional:
             return (Variable(torch.zeros(2*self.lstm_layers, batch_size, self.lstm_hidden, device=device), requires_grad=True),
@@ -49,14 +48,12 @@ class EventDetector(nn.Module):
         batch_size, timesteps, C, H, W = x.size()
         self.hidden = self.init_hidden(batch_size)
 
-        # CNN forward
         c_in = x.view(batch_size * timesteps, C, H, W)
         c_out = self.cnn(c_in)
         c_out = c_out.mean(3).mean(2)
         if self.dropout:
             c_out = self.drop(c_out)
 
-        # LSTM forward
         r_in = c_out.view(batch_size, timesteps, -1)
         r_out, states = self.rnn(r_in, self.hidden)
         out = self.lin(r_out)

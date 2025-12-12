@@ -38,20 +38,15 @@ def extract_skeleton_from_video(video_path, pose):
         if not ret:
             break
         
-        # Convert BGR to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Process frame with MediaPipe
         results = pose.process(rgb_frame)
         
         if results.pose_landmarks:
-            # Extract landmarks: 33 points, each with x, y, z, visibility
             landmarks = []
             for landmark in results.pose_landmarks.landmark:
                 landmarks.append([landmark.x, landmark.y, landmark.z, landmark.visibility])
             skeletons.append(landmarks)
         else:
-            # No detection - use zeros
             skeletons.append([[0.0, 0.0, 0.0, 0.0] for _ in range(33)])
     
     cap.release()
@@ -106,7 +101,6 @@ def normalize_skeleton(skeleton):
     y_coords = skeleton[:, 1]
     visibility = skeleton[:, 3]
     
-    # Calculate hip center
     left_hip = skeleton[LEFT_HIP]
     right_hip = skeleton[RIGHT_HIP]
     
@@ -128,11 +122,9 @@ def normalize_skeleton(skeleton):
             hip_center_x = 0.5
             hip_center_y = 0.5
     
-    # Center around hip
     normalized[:, 0] = x_coords - hip_center_x
     normalized[:, 1] = y_coords - hip_center_y
     
-    # Calculate body scale
     left_shoulder = skeleton[LEFT_SHOULDER]
     right_shoulder = skeleton[RIGHT_SHOULDER]
     scale = 1.0
@@ -152,7 +144,6 @@ def normalize_skeleton(skeleton):
         if dist_shoulder_hip > 0:
             scale = dist_shoulder_hip
     
-    # Normalize by scale
     if scale > 0:
         normalized[:, 0] = normalized[:, 0] / scale
         normalized[:, 1] = normalized[:, 1] / scale
@@ -176,7 +167,6 @@ def calculate_error_distribution(model, dataloader, device):
             skeleton_seq = skeleton_seq.to(device)
             reconstructed = model(skeleton_seq)
             
-            # Calculate MSE per sequence
             mse = torch.mean((reconstructed - skeleton_seq) ** 2, dim=(1, 2))
             errors.extend(mse.cpu().numpy().tolist())
     
@@ -196,7 +186,6 @@ def calculate_error_distribution(model, dataloader, device):
     }
 
 
-# MediaPipe Pose landmark names (33 landmarks)
 LANDMARK_NAMES = [
     'Nose', 'Left Eye Inner', 'Left Eye', 'Left Eye Outer', 'Right Eye Inner',
     'Right Eye', 'Right Eye Outer', 'Left Ear', 'Right Ear', 'Mouth Left',
@@ -216,23 +205,11 @@ def get_landmark_name(landmark_idx):
 
 
 def calculate_per_landmark_error(original, reconstructed):
-    """
-    Calculate reconstruction error per landmark.
-    
-    Args:
-        original: Original skeleton tensor [seq_length, 132]
-        reconstructed: Reconstructed skeleton tensor [seq_length, 132]
-    
-    Returns:
-        landmark_errors: np.array of shape [33] with error per landmark
-    """
-    # Reshape to [seq_length, 33, 4]
+    """Calculate reconstruction error per landmark."""
     orig_reshaped = original.view(-1, 33, 4)
     recon_reshaped = reconstructed.view(-1, 33, 4)
     
-    # Calculate MSE per landmark across all frames
-    # Error for each landmark = mean((original - reconstructed)^2) across all frames and features
-    errors = torch.mean((orig_reshaped - recon_reshaped) ** 2, dim=(0, 2))  # [33]
+    errors = torch.mean((orig_reshaped - recon_reshaped) ** 2, dim=(0, 2))
     
     return errors.cpu().numpy()
 
@@ -257,17 +234,7 @@ def identify_worst_landmark(landmark_errors):
 
 
 def identify_top_problem_areas(landmark_errors, top_n=5):
-    """
-    Identify top N body parts with highest reconstruction errors.
-    
-    Args:
-        landmark_errors: np.array of shape [33] with error per landmark
-        top_n: Number of top problem areas to return
-    
-    Returns:
-        List of tuples: [(landmark_idx, error, name), ...] sorted by error (highest first)
-    """
-    # Get indices sorted by error (descending)
+    """Identify top N body parts with highest reconstruction errors."""
     sorted_indices = np.argsort(landmark_errors)[::-1]
     
     top_problems = []
@@ -281,17 +248,7 @@ def identify_top_problem_areas(landmark_errors, top_n=5):
 
 
 def error_to_score(reconstruction_error, error_stats):
-    """
-    Convert reconstruction error to quality score (1-100).
-    
-    Lower error = higher score.
-    Uses percentile-based mapping from training set error distribution.
-    """
-    # Map error to score using training set statistics
-    # Errors at or below 5th percentile → score 100
-    # Errors at or above 95th percentile → score 1
-    # Linear interpolation between
-    
+    """Convert reconstruction error to quality score (1-100) using percentiles."""
     p5 = error_stats['percentiles'][5]
     p95 = error_stats['percentiles'][95]
     
@@ -300,7 +257,6 @@ def error_to_score(reconstruction_error, error_stats):
     elif reconstruction_error >= p95:
         score = 1.0
     else:
-        # Linear interpolation
         score = 100.0 - ((reconstruction_error - p5) / (p95 - p5)) * 99.0
     
     return max(1.0, min(100.0, score))
@@ -326,20 +282,17 @@ def rate_swing_spatial(video_path, model_path='models/skeleton_autoencoder_best.
     print()
     print(f'Analyzing spatial quality of: {video_path}')
     
-    # Check if model exists
     if not os.path.exists(model_path):
         print(f"❌ Error: Model file not found: {model_path}")
         print("Please train the model first using train_skeleton_autoencoder.py")
         return None, None, None, None
     
-    # Device selection
-    device = torch.device('cpu')  # Use CPU for inference
+    device = torch.device('cpu')
     if torch.cuda.is_available():
         device = torch.device('cuda')
     elif torch.backends.mps.is_available():
         device = torch.device('mps')
     
-    # Load model
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model_config = checkpoint.get('model_config', {
         'hidden_dim': 128,
@@ -362,7 +315,6 @@ def rate_swing_spatial(video_path, model_path='models/skeleton_autoencoder_best.
     
     print(f'Loaded model from {model_path}')
     
-    # Extract skeletons from video
     print('Extracting MediaPipe skeletons from video...')
     mp_pose = mp.solutions.pose
     pose = mp_pose.Pose(
@@ -382,67 +334,52 @@ def rate_swing_spatial(video_path, model_path='models/skeleton_autoencoder_best.
     
     print(f'Extracted {len(skeletons)} frames')
     
-    # Interpolate missing detections
     skeletons = interpolate_missing_detections(skeletons)
     
-    # Normalize skeletons
     print('Normalizing skeletons...')
     normalized_frames = []
     for frame in skeletons:
         normalized_frame = normalize_skeleton(frame)
         normalized_frames.append(normalized_frame.flatten())
     
-    normalized_frames = np.array(normalized_frames)  # [num_frames, 132]
+    normalized_frames = np.array(normalized_frames)
     
-    # Process in sequences
     print('Processing with autoencoder...')
     all_errors = []
-    all_landmark_errors = np.zeros(33)  # Accumulate errors per landmark
+    all_landmark_errors = np.zeros(33)
     
     with torch.no_grad():
-        # Process video in overlapping windows
-        step_size = seq_length // 2  # 50% overlap
+        step_size = seq_length // 2
         
         for start_idx in range(0, len(normalized_frames), step_size):
             end_idx = min(start_idx + seq_length, len(normalized_frames))
             seq = normalized_frames[start_idx:end_idx]
             
             if len(seq) < seq_length:
-                # Pad if needed
                 padding = np.zeros((seq_length - len(seq), 132))
                 seq = np.vstack([seq, padding])
             
-            # Convert to tensor
-            seq_tensor = torch.from_numpy(seq).float().unsqueeze(0).to(device)  # [1, seq_length, 132]
-            
-            # Reconstruct
+            seq_tensor = torch.from_numpy(seq).float().unsqueeze(0).to(device)
             reconstructed = model(seq_tensor)
             
-            # Calculate overall MSE
             mse = torch.mean((reconstructed - seq_tensor) ** 2).item()
             all_errors.append(mse)
             
-            # Calculate per-landmark errors
             landmark_errors = calculate_per_landmark_error(
-                seq_tensor.squeeze(0),  # [seq_length, 132]
-                reconstructed.squeeze(0)  # [seq_length, 132]
+                seq_tensor.squeeze(0),
+                reconstructed.squeeze(0)
             )
             all_landmark_errors += landmark_errors
     
-    # Average error across all windows
     reconstruction_error = np.mean(all_errors)
     
-    # Average per-landmark errors across all windows
     all_landmark_errors = all_landmark_errors / len(all_errors) if len(all_errors) > 0 else all_landmark_errors
     
-    # Identify worst-performing landmark and top problem areas
     worst_idx, worst_error, worst_name = identify_worst_landmark(all_landmark_errors)
     top_problems = identify_top_problem_areas(all_landmark_errors, top_n=5)
     
-    # Calculate error distribution from training set (for score mapping)
     print('Calculating quality score...')
     try:
-        # Load training dataset to get error distribution
         train_dataset = SkeletonDataset(
             data_file='data/train_split_1.pkl',
             skeletons_file=skeletons_file,
@@ -454,14 +391,11 @@ def rate_swing_spatial(video_path, model_path='models/skeleton_autoencoder_best.
         
         error_stats = calculate_error_distribution(model, train_loader, device)
         
-        # Convert error to score
         score = error_to_score(reconstruction_error, error_stats)
         
     except Exception as e:
         print(f"Warning: Could not calculate error distribution: {e}")
         print("Using simple error-to-score mapping...")
-        # Fallback: simple mapping (assumes errors are in reasonable range)
-        # Lower error = higher score
         score = max(1.0, min(100.0, 100.0 - reconstruction_error * 1000))
     
     print()
@@ -471,7 +405,6 @@ def rate_swing_spatial(video_path, model_path='models/skeleton_autoencoder_best.
     print(f'Reconstruction Error: {reconstruction_error:.6f}')
     print(f'Spatial Quality Score: {score:.1f}/100')
     
-    # Qualitative assessment
     if score >= 80:
         quality = "Excellent - Professional Spatial Patterns"
     elif score >= 70:
@@ -486,7 +419,6 @@ def rate_swing_spatial(video_path, model_path='models/skeleton_autoencoder_best.
     print(f'Quality Assessment: {quality}')
     print('=' * 80)
     
-    # Report worst-performing body parts
     print()
     print('BODY PART ANALYSIS:')
     print('=' * 80)

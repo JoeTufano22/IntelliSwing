@@ -8,17 +8,14 @@ import os
 
 
 if __name__ == '__main__':
-
-    # training configuration
     split = 1
     iterations = 2000
-    it_save = 100  # save model every 100 iterations
-    n_cpu = 2  # Reduced from 6 to avoid overwhelming CPU
+    it_save = 100
+    n_cpu = 2
     seq_length = 64
-    bs = 4  # Reduced from 22 to use less memory
-    k = 10  # frozen layers
-    
-    # Set device (CUDA, MPS for Apple Silicon, or CPU)
+    bs = 4
+    k = 10
+
     if torch.cuda.is_available():
         device = torch.device('cuda')
         print('Using CUDA')
@@ -52,8 +49,6 @@ if __name__ == '__main__':
                              num_workers=n_cpu,
                              drop_last=True)
 
-    # the 8 golf swing events are classes 0 through 7, no-event is class 8
-    # the ratio of events to no-events is approximately 1:35 so weight classes accordingly:
     weights = torch.FloatTensor([1/8, 1/8, 1/8, 1/8, 1/8, 1/8, 1/8, 1/8, 1/35]).to(device)
     criterion = torch.nn.CrossEntropyLoss(weight=weights)
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001)
